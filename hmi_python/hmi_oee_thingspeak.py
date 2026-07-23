@@ -24,8 +24,6 @@ TASA_IDEAL_PIEZAS_HORA = 120
 THINGSPEAK_WRITE_API_KEY = "O388NHNM65IYQLBF"
 THINGSPEAK_URL = "https://api.thingspeak.com/update.json"
 
-# ThingSpeak no debe recibir datos cada segundo.
-# Se envía cada 20 segundos.
 INTERVALO_IOT_SEGUNDOS = 20
 ultimo_envio_iot = 0
 
@@ -95,6 +93,11 @@ class AppOEE(tk.Tk):
 
         self.meta_cumplida = False
         self.reporte_guardado = False
+
+        # El botón TERMINAR TURNO solo aparece
+        # cuando ya se seleccionó AVERIA o LOGISTICA
+        self.motivo_confirmado = False
+        self.boton_terminar_visible = False
 
         self.crear_pantalla_meta()
         self.frame_meta.pack(fill="both", expand=True)
@@ -268,6 +271,9 @@ class AppOEE(tk.Tk):
 
         self.meta_cumplida = False
         self.reporte_guardado = False
+
+        self.motivo_confirmado = False
+        self.boton_terminar_visible = False
 
         piezas_anteriores = -1
         ultimo_tiempo_datos = 0
@@ -628,6 +634,18 @@ class AppOEE(tk.Tk):
         )
         self.lbl_alerta_meta.pack(pady=10)
 
+        # Botón oculto al inicio.
+        # Aparece solo después de seleccionar AVERIA o LOGISTICA.
+        self.btn_terminar_turno = tk.Button(
+            frame_der,
+            text="TERMINAR TURNO",
+            font=("Arial", 11, "bold"),
+            bg="#111827",
+            fg="white",
+            width=20,
+            command=self.terminar_turno_manual
+        )
+
     # ==========================================
     # ESTADOS Y TIEMPOS
     # ==========================================
@@ -774,6 +792,7 @@ class AppOEE(tk.Tk):
                         historial_piezas.clear()
                         self.meta_cumplida = False
                         self.reporte_guardado = False
+                        self.motivo_confirmado = False
                         self.lbl_oee_final.config(text="0 %")
 
                     elif linea.startswith("PARADA_SELECCIONADA"):
@@ -782,6 +801,9 @@ class AppOEE(tk.Tk):
                         for p in partes:
                             if "motivo=" in p:
                                 self.motivo_parada_actual = p.split("=", 1)[1].strip().upper()
+
+                                if self.motivo_parada_actual in ["AVERIA", "LOGISTICA"]:
+                                    self.motivo_confirmado = True
 
                     elif linea.startswith("DATA"):
                         ultimo_tiempo_datos = ahora_time
@@ -805,9 +827,11 @@ class AppOEE(tk.Tk):
 
                             if motivo_serial == "AVERIA":
                                 self.motivo_parada_actual = "AVERIA"
+                                self.motivo_confirmado = True
 
                             elif motivo_serial == "LOGISTICA":
                                 self.motivo_parada_actual = "LOGISTICA"
+                                self.motivo_confirmado = True
 
                             elif motivo_serial == "SELECCIONAR":
                                 self.motivo_parada_actual = "SIN CLASIFICAR"
@@ -1017,6 +1041,16 @@ class AppOEE(tk.Tk):
         else:
             self.lbl_motivo.config(text="Motivo de parada: NINGUNO", fg="#374151")
 
+        # Mostrar botón TERMINAR TURNO solo después de seleccionar AVERIA o LOGISTICA
+        if self.motivo_confirmado and not self.meta_cumplida and not self.reporte_guardado:
+            if not self.boton_terminar_visible:
+                self.btn_terminar_turno.pack(pady=10)
+                self.boton_terminar_visible = True
+        else:
+            if self.boton_terminar_visible:
+                self.btn_terminar_turno.pack_forget()
+                self.boton_terminar_visible = False
+
         ahora_str = datetime.now().strftime("%H:%M:%S")
 
         self.lbl_status_bar.config(
@@ -1024,6 +1058,67 @@ class AppOEE(tk.Tk):
         )
 
         self.enviar_iot_thingspeak()
+
+    # ==========================================
+    # TERMINAR TURNO MANUAL
+    # ==========================================
+    def terminar_turno_manual(self):
+        (
+            tiempo_total,
+            tiempo_pausa,
+            tiempo_productivo,
+            tiempo_averia,
+            tiempo_logistica,
+            tiempo_sin_clasificar
+        ) = self.obtener_tiempos()
+
+        disponibilidad, rendimiento, calidad, oee_final = self.calcular_metricas_oee()
+
+        self.meta_cumplida = True
+        self.estado_actual = "META CUMPLIDA"
+
+        self.lbl_oee_final.config(text=f"{oee_final:.1f} %")
+
+        archivo = self.guardar_reporte_final(
+            tiempo_total,
+            tiempo_pausa,
+            tiempo_productivo,
+            tiempo_averia,
+            tiempo_logistica,
+            tiempo_sin_clasificar,
+            disponibilidad,
+            rendimiento,
+            calidad,
+            oee_final
+        )
+
+        self.lbl_alerta_meta.config(
+            text="TURNO TERMINADO\nCSV EXPORTADO",
+            fg="#111827"
+        )
+
+        if self.boton_terminar_visible:
+            self.btn_terminar_turno.pack_forget()
+            self.boton_terminar_visible = False
+
+        messagebox.showinfo(
+            "Cierre del turno",
+            f"TURNO TERMINADO\n\n"
+            f"Piezas producidas: {self.piezas_actuales}\n"
+            f"Meta del pedido: {meta_actual}\n\n"
+            f"Tiempo total: {self.formato_tiempo(tiempo_total)}\n"
+            f"Tiempo total en pausa: {self.formato_tiempo(tiempo_pausa)}\n"
+            f"Avería: {self.formato_tiempo(tiempo_averia)}\n"
+            f"Logística: {self.formato_tiempo(tiempo_logistica)}\n"
+            f"Sin clasificar: {self.formato_tiempo(tiempo_sin_clasificar)}\n"
+            f"Tiempo productivo: {self.formato_tiempo(tiempo_productivo)}\n\n"
+            f"Disponibilidad: {disponibilidad:.1f} %\n"
+            f"Rendimiento: {rendimiento:.1f} %\n"
+            f"Calidad: {calidad:.1f} %\n"
+            f"OEE final: {oee_final:.1f} %\n\n"
+            f"Reporte CSV exportado:\n{archivo}\n\n"
+            f"FICA - UCE 2026"
+        )
 
     # ==========================================
     # META CUMPLIDA Y REPORTE
